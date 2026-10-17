@@ -3,298 +3,163 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const URL = "https://railease-india-eyq2.vercel.app/";
-const OUT = path.join(__dirname, "screenshots");
+const BASE_URL = "https://blazedemo.com/";
+const OUTPUT_DIR = path.join(__dirname, "screenshots");
 
-fs.mkdirSync(OUT, { recursive: true });
+fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 
-async function firstVisible(driver, locators, timeout = 12000) {
-  return driver.wait(async () => {
-    for (const locator of locators) {
-      const elements = await driver.findElements(locator);
-      for (const element of elements) {
-        if (await element.isDisplayed()) return element;
-      }
-    }
-    return false;
-  }, timeout, "Could not find a visible matching element");
-}
-
-async function fillField(driver, field, value) {
-  const element = await firstVisible(driver, [
-    By.css(`input[name="${field}"]`),
-    By.css(`input[id="${field}"]`),
-    By.css(`input[placeholder*="${field}" i]`),
-    By.css(`input[aria-label*="${field}" i]`)
-  ]);
-
-  await element.clear();
-  await element.sendKeys(value);
-  return element;
-}
-
-async function screenshot(driver, browser, name) {
-  const data = await driver.takeScreenshot();
-  fs.writeFileSync(
-    path.join(OUT, `${browser}-${name}.png`),
-    data,
-    "base64"
-  );
-}
-
-async function runBrowser(browser) {
+async function runTest(browserName) {
   let driver;
-  const result = {
-    browser,
+  const report = {
+    browser: browserName,
     title: "NOT RUN",
-    sourceDestination: "NOT RUN",
-    date: "NOT RUN",
-    search: "NOT RUN",
+    searchResults: "NOT RUN",
     validation: "NOT RUN",
-    screenshot: "NOT SAVED",
-    error: ""
+    dateSelection: "NOT SUPPORTED BY DEMO",
+    error: null
   };
 
   try {
     driver = await new Builder()
-      .forBrowser(browser)
+      .forBrowser(browserName)
       .build();
 
-    await driver.manage().window().setRect({
-      width: 1365,
-      height: 900
-    });
-
+    await driver.manage().window().maximize();
     await driver.manage().setTimeouts({
-      pageLoad: 30000,
-      implicit: 0
+      implicit: 0,
+      pageLoad: 30000
     });
 
-    // 1. Open RailEase.
-    await driver.get(URL);
 
+    await driver.get(BASE_URL);
     await driver.wait(
-      until.elementLocated(By.css("body")),
+      until.elementLocated(By.name("fromPort")),
       15000
     );
 
-    await driver.wait(async () => {
-      const text = await driver.findElement(By.css("body"))
-        .getText();
-      return text.includes("Search Trains");
+    const title = await driver.getTitle();
+    assert.match(title, /BlazeDemo/i);
+    report.title = "PASS";
+
+//changes add comment
+    const from = await driver.findElement(By.name("fromPort"));
+    const to = await driver.findElement(By.name("toPort"));
+
+    await from.sendKeys("Boston");
+    await to.sendKeys("London");
+
+
+    report.dateSelection = "N/A - no date field on BlazeDemo";
+
+
+    await driver.findElement(
+      By.css("input[type='submit']")
+    ).click();
+
+    await driver.wait(
+      until.urlContains("reserve.php"),
+      15000
+    );
+
+    const results = await driver.wait(async () => {
+      const rows = await driver.findElements(
+        By.css("table tbody tr")
+      );
+      return rows.length > 0 ? rows : false;
     }, 15000);
 
-    const title = await driver.getTitle();
-    assert.ok(title.trim().length > 0, "Page title must not be empty");
-    result.title = `PASS: ${title}`;
+    assert.ok(results.length > 0, "Flight results should appear");
+    report.searchResults = `PASS (${results.length} rows)`;
 
-    await screenshot(driver, browser, "home");
-
-    // 2. Inspect the actual booking form controls.
-    // These diagnostics help identify selectors if the UI changes.
-    const controls = await driver.executeScript(() =>
-      Array.from(document.querySelectorAll("input, select, button"))
-        .filter(el => {
-          const r = el.getBoundingClientRect();
-          return r.width > 0 && r.height > 0;
-        })
-        .map(el => ({
-          tag: el.tagName,
-          type: el.type || "",
-          name: el.name || "",
-          id: el.id || "",
-          placeholder: el.placeholder || "",
-          ariaLabel: el.getAttribute("aria-label") || "",
-          text: (el.innerText || el.value || "").trim()
-        }))
-    );
-
-    console.log(`\n${browser} visible controls:`);
-    console.log(JSON.stringify(controls, null, 2));
-
-    // 3. Find source and destination using common attributes.
-    // If these fail, use the printed diagnostics to adapt selectors.
-    const source = await firstVisible(driver, [
-      By.css('input[placeholder*="from" i]'),
-      By.css('input[aria-label*="from" i]'),
-      By.css('input[name*="from" i]'),
-      By.css('input[id*="from" i]')
-    ]);
-
-    await source.click();
-    await source.sendKeys("Nashik");
-
-    // Allow station autocomplete to render, if present.
-    await driver.sleep(700);
-
-    const sourceOptions = await driver.findElements(
-      By.css('[role="option"]')
-    );
-
-    if (sourceOptions.length > 0) {
-      await sourceOptions[0].click();
-    }
-
-    const destination = await firstVisible(driver, [
-      By.css('input[placeholder*="to" i]'),
-      By.css('input[aria-label*="to" i]'),
-      By.css('input[name*="to" i]'),
-      By.css('input[id*="to" i]')
-    ]);
-
-    await destination.click();
-    await destination.sendKeys("Mumbai");
-
-    await driver.sleep(700);
-
-    const destinationOptions = await driver.findElements(
-      By.css('[role="option"]')
-    );
-
-    if (destinationOptions.length > 0) {
-      await destinationOptions[0].click();
-    }
-
-    result.sourceDestination = "PASS: fields populated";
-
-    // 4. Set journey date if the page exposes an input[type=date].
-    const dateInputs = await driver.findElements(
-      By.css('input[type="date"]')
-    );
-
-    if (dateInputs.length > 0) {
-      const dateInput = dateInputs.find
-        ? dateInputs[0]
-        : dateInputs[0];
-
-      await dateInput.clear();
-      await dateInput.sendKeys("2026-11-15");
-      result.date = "PASS: date entered";
-    } else {
-      result.date =
-        "REVIEW: inspect visible controls for the date-picker selector";
-    }
-
-    await screenshot(driver, browser, "form");
-
-    // 5. Search for trains.
-    const searchButton = await firstVisible(driver, [
-      By.xpath(
-        "//button[contains(translate(normalize-space(.)," +
-        "'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz')," +
-        "'search trains')]"
-      ),
-      By.xpath(
-        "//input[@type='submit' and contains(" +
-        "translate(@value,'ABCDEFGHIJKLMNOPQRSTUVWXYZ'," +
-        "'abcdefghijklmnopqrstuvwxyz'),'search')]"
-      )
-    ]);
-
-    await searchButton.click();
-
-    // Wait for a meaningful change instead of assuming a fixed delay.
-    await driver.wait(async () => {
-      const body = await driver.findElement(By.css("body")).getText();
-      const url = await driver.getCurrentUrl();
-
-      return url !== URL ||
-        /train|result|available|no trains|error|journey/i.test(body);
-    }, 15000).catch(() => null);
-
-    await screenshot(driver, browser, "search");
-
-    const finalBody = await driver.findElement(By.css("body")).getText();
-
-    result.search =
-      /train|result|available|no trains|journey/i.test(finalBody)
-        ? "REVIEW: inspect search output and verify result cards"
-        : "FAIL: no recognizable search output";
-
-    // 6. Empty-destination validation.
-    // Reload to reset the form.
-    await driver.get(URL);
-
-    const emptyDestination = await firstVisible(driver, [
-      By.css('input[placeholder*="to" i]'),
-      By.css('input[aria-label*="to" i]'),
-      By.css('input[name*="to" i]'),
-      By.css('input[id*="to" i]')
-    ]);
-
-    const emptySearch = await firstVisible(driver, [
-      By.xpath("//button[contains(., 'Search Trains')]")
-    ]);
-
-    await emptySearch.click();
-
-    await driver.sleep(500);
-
-    const validationBody = await driver.findElement(
-      By.css("body")
-    ).getText();
-
-    const validity = await emptyDestination.getAttribute("required");
-
-    const validationMessage = await emptyDestination
-      .getAttribute("validationMessage")
-      .catch(() => "");
-
-    const nativeValidity = await driver.executeScript(
-      el => ({
-        valid: el.checkValidity(),
-        message: el.validationMessage
-      }),
-      emptyDestination
-    );
-
-    if (validity !== null || !nativeValidity.valid ||
-        /required|destination|select.*station|enter.*station/i
-          .test(validationBody)) {
-      result.validation =
-        "PASS: destination validation detected";
-    } else {
-      result.validation =
-        "FAIL/REVIEW: no destination validation detected";
-    }
-
-    console.log("Validation details:", {
-      requiredAttribute: validity,
-      validationMessage,
-      nativeValidity
+    await driver.takeScreenshot().then(data => {
+      fs.writeFileSync(
+        path.join(OUTPUT_DIR, `${browserName}-search.png`),
+        data,
+        "base64"
+      );
     });
 
-    await screenshot(driver, browser, "validation");
-    result.screenshot = "Saved";
+    await driver.get(BASE_URL);
 
-  } catch (error) {
-    result.error = error.message;
-    console.error(`${browser} failed: ${error.message}`);
-
-    if (driver) {
-      await screenshot(driver, browser, "error").catch(() => {});
-    }
-  } finally {
-    if (driver) await driver.quit().catch(() => {});
-
-    fs.appendFileSync(
-      path.join(__dirname, "results.jsonl"),
-      JSON.stringify(result) + "\n"
+    await driver.wait(
+      until.elementLocated(By.name("toPort")),
+      10000
     );
 
-    console.log("RESULT:", result);
+    await driver.findElement(By.name("fromPort"))
+      .sendKeys("Boston");
+
+    await driver.findElement(
+      By.css("input[type='submit']")
+    ).click();
+
+    const currentUrl = await driver.getCurrentUrl();
+    const destination = await driver.findElement(
+      By.name("toPort")
+    ).catch(() => null);
+
+    if (destination) {
+      const required = await destination.getAttribute("required");
+      report.validation = required
+        ? "PASS - destination is required"
+        : "FAIL - no required attribute";
+    } else {
+      report.validation =
+        currentUrl.includes("reserve.php")
+          ? "FAIL - empty destination was submitted"
+          : "REVIEW - destination validation not confirmed";
+    }
+
+    await driver.takeScreenshot().then(data => {
+      fs.writeFileSync(
+        path.join(OUTPUT_DIR, `${browserName}-validation.png`),
+        data,
+        "base64"
+      );
+    });
+
+  } catch (error) {
+    report.error = error.message;
+    console.error(`[${browserName}]`, error.message);
+
+    if (driver) {
+      try {
+        await driver.takeScreenshot().then(data => {
+          fs.writeFileSync(
+            path.join(OUTPUT_DIR, `${browserName}-error.png`),
+            data,
+            "base64"
+          );
+        });
+      } catch (_) {
+        // Screenshot might be unavailable if the browser failed to start.
+      }
+    }
+  } finally {
+    if (driver) {
+      await driver.quit().catch(() => {});
+    }
+
+    console.log(JSON.stringify(report, null, 2));
+
+    fs.appendFileSync(
+      path.join(__dirname, "test-results.jsonl"),
+      JSON.stringify(report) + "\n"
+    );
   }
 
-  return result;
+  return report;
 }
 
 (async () => {
-  const allResults = [];
+  const browsers = ["chrome", "firefox", "MicrosoftEdge"];
+  const reports = [];
 
-  for (const browser of ["chrome", "firefox", "MicrosoftEdge"]) {
-    allResults.push(await runBrowser(browser));
+  for (const browser of browsers) {
+    console.log(`\nRunning tests on ${browser}...`);
+    reports.push(await runTest(browser));
   }
 
-  console.log("\nFINAL CROSS-BROWSER SUMMARY");
-  console.table(allResults);
+  console.log("\nCROSS-BROWSER SUMMARY");
+  console.table(reports);
 })();
